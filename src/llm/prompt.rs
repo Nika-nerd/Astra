@@ -50,8 +50,8 @@ pub fn build_repair_prompt(previous_prompt: &str, llm_output: &str, compiler_err
 
 pub fn parse_file_patches(llm_response: &str) -> Vec<FilePatch> {
     let mut patches = Vec::new();
-    let start_marker = "=== FILE:";
-    let end_marker = "=== END FILE ===";
+    let start_marker = concat!("=== ", "FILE:");
+    let end_marker = concat!("\n=== ", "END FILE ===");
 
     let mut current_pos = 0;
     while let Some(start_idx) = llm_response[current_pos..].find(start_marker) {
@@ -63,11 +63,14 @@ pub fn parse_file_patches(llm_response: &str) -> Vec<FilePatch> {
         let path_str = header_line.trim_end_matches("===").trim();
 
         let content_start = abs_start + line_end + 1;
-        let Some(end_idx) = llm_response[content_start..].find(end_marker) else { break };
+        let search_area = &llm_response[content_start..];
 
-        let mut raw_content = llm_response[content_start..content_start + end_idx].trim();
+        // Если внутри файла встречается еще один === FILE:, ищем закрывающий маркер до него, иначе берем последний
+        let next_file_idx = search_area.find(start_marker).unwrap_or(search_area.len());
+        let Some(end_idx) = search_area[..next_file_idx].rfind(end_marker) else { break };
 
-        // Очистка на случай, если LLM все же обернула код внутри блока в ```rust ... ```
+        let mut raw_content = search_area[..end_idx].trim();
+
         if raw_content.starts_with("```") {
             if let Some(first_nl) = raw_content.find('\n') {
                 raw_content = &raw_content[first_nl + 1..];
@@ -98,11 +101,10 @@ mod tests {
     fn test_parse_file_patches() {
         let sample = r#"
 === FILE: src/math.rs ===
-```rust
 pub fn add(a: i32, b: i32) -> i32 {
     a + b
-}=== END FILE === "#; let patches = parse_file_patches(sample);
- assert_eq!(patches.len(), 1); 
- assert_eq!(patches[0].relative_path, PathBuf::from("src/math.rs")); 
- assert!(patches[0].content.contains("pub fn add")); 
-assert!(!patches[0].content.contains("```")); } }
+}
+=== END FILE === "#; let patches = parse_file_patches(sample); 
+assert_eq!(patches.len(), 1); assert_eq!(patches[0].relative_path, PathBuf::from("src/math.rs"));
+ assert!(patches[0].content.contains("pub fn add"));
+ assert!(!patches[0].content.contains("```")); } }
