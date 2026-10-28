@@ -1,3 +1,5 @@
 /target
 .env
 *.log
+vscode-extension/node_modules/
+vscode-extension/out/

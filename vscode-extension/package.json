@@ -1,0 +1,68 @@
+{
+  "name": "astra-agent",
+  "displayName": "Astra Rust Autonomous Agent",
+  "description": "Autonomous Rust coding agent powered by Gemma 4, AST RepoMap, cargo clippy and cargo test verification.",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "astra-sidebar",
+          "title": "Astra Agent",
+          "icon": "$(hubot)"
+        }
+      ]
+    },
+    "views": {
+      "astra-sidebar": [
+        {
+          "type": "webview",
+          "id": "astra.chatView",
+          "name": "Astra Autonomous Agent"
+         }
+      ]
+    },
+    "commands": [
+      {
+        "command": "astra.runTask",
+        "title": "Astra: Execute Autonomous Task"
+      }
+    ],
+    "configuration": {
+      "title": "Astra Agent",
+      "properties": {
+        "astra.backendPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to astra-backend binary (if empty, uses cargo run or target/release/astra-backend in Astra repo)"
+        },
+        "astra.llmModel": {
+          "type": "string",
+          "default": "gemma4",
+          "description": "Local Ollama model name"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^7.0.2"
+  }
+}
