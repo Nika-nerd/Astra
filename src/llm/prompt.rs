@@ -1,0 +1,108 @@
+use std::path::PathBuf;
+
+pub const SYSTEM_PROMPT: &str = r#"You are Astra, an autonomous senior Rust software engineer.
+You have access to the project's Cargo.toml manifests and the AST skeleton of all Rust files.
+
+RULES:
+1. Write idiomatic, safe, and clean Rust code that passes `cargo clippy` and `cargo test`.
+2. Do not add explanations, greetings, or markdown chatter outside the file blocks.
+3. For every file you create or modify, output its COMPLETE valid Rust source code using the exact format below:
+
+=== FILE: relative/path/to/file.rs ===
+<full rust code here>
+=== END FILE ===
+
+4. If you receive compiler or clippy errors, analyze the exact error spans and fix the code in the affected files."#;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FilePatch {
+    pub relative_path: PathBuf,
+    pub content: String,
+}
+
+pub fn build_initial_prompt(
+    repo_map: &str,
+    active_files: &[(String, String)],
+    user_task: &str,
+) -> String {
+    let mut prompt = String::new();
+    prompt.push_str(&format!("{}\n", repo_map));
+
+    if !active_files.is_empty() {
+        prompt.push_str("=== TARGET FILES FULL CONTENT ===\n");
+        for (path, content) in active_files {
+            prompt.push_str(&format!("--- {} ---\n{}\n\n", path, content));
+        }
+    }
+
+    prompt.push_str("=== USER TASK ===\n");
+    prompt.push_str(user_task);
+    prompt.push_str("\n\nProvide the updated or new files using the === FILE: <path> === format.");
+    prompt
+}
+
+pub fn build_repair_prompt(previous_prompt: &str, llm_output: &str, compiler_errors: &str) -> String {
+    format!(
+        "{}\n\n=== YOUR PREVIOUS OUTPUT ===\n{}\n\n=== COMPILER / CLIPPY / TEST ERRORS ===\n{}\n\nFix the errors above and output the corrected files using the === FILE: <path> === format.",
+        previous_prompt, llm_output, compiler_errors
+    )
+}
+
+pub fn parse_file_patches(llm_response: &str) -> Vec<FilePatch> {
+    let mut patches = Vec::new();
+    let start_marker = "=== FILE:";
+    let end_marker = "=== END FILE ===";
+
+    let mut current_pos = 0;
+    while let Some(start_idx) = llm_response[current_pos..].find(start_marker) {
+        let abs_start = current_pos + start_idx + start_marker.len();
+        let rest = &llm_response[abs_start..];
+
+        let Some(line_end) = rest.find('\n') else { break };
+        let header_line = rest[..line_end].trim();
+        let path_str = header_line.trim_end_matches("===").trim();
+
+        let content_start = abs_start + line_end + 1;
+        let Some(end_idx) = llm_response[content_start..].find(end_marker) else { break };
+
+        let mut raw_content = llm_response[content_start..content_start + end_idx].trim();
+
+        // Очистка на случай, если LLM все же обернула код внутри блока в ```rust ... ```
+        if raw_content.starts_with("```") {
+            if let Some(first_nl) = raw_content.find('\n') {
+                raw_content = &raw_content[first_nl + 1..];
+            }
+            if raw_content.ends_with("```") {
+                raw_content = raw_content[..raw_content.len() - 3].trim_end();
+            }
+        }
+
+        if !path_str.is_empty() {
+            patches.push(FilePatch {
+                relative_path: PathBuf::from(path_str),
+                content: format!("{}\n", raw_content),
+            });
+        }
+
+        current_pos = content_start + end_idx + end_marker.len();
+    }
+
+    patches
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_file_patches() {
+        let sample = r#"
+=== FILE: src/math.rs ===
+```rust
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}=== END FILE === "#; let patches = parse_file_patches(sample);
+ assert_eq!(patches.len(), 1); 
+ assert_eq!(patches[0].relative_path, PathBuf::from("src/math.rs")); 
+ assert!(patches[0].content.contains("pub fn add")); 
+assert!(!patches[0].content.contains("```")); } }
