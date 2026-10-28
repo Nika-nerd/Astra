@@ -3,6 +3,13 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 
+
+
+export interface FilePatch {
+    relative_path: string;
+    content: string;
+}
+
 export interface AgentTask {
     prompt: string;
     target_files: string[];
@@ -12,9 +19,12 @@ export interface AgentTask {
 export interface AgentResult {
     success: boolean;
     attempts_used: number;
+    explanation: string;
+    proposed_patches: FilePatch[];
     modified_files: string[];
     last_error: string | null;
 }
+
 
 interface RpcResponse {
     id: string;

@@ -1,20 +1,26 @@
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub const SYSTEM_PROMPT: &str = r#"You are Astra, an autonomous senior Rust software engineer.
-You have access to the project's Cargo.toml manifests and the AST skeleton of all Rust files.
+You have access to the target project's Cargo.toml manifests and the AST skeleton of all its Rust files.
 
 RULES:
-1. Write idiomatic, safe, and clean Rust code that passes `cargo clippy` and `cargo test`.
-2. Do not add explanations, greetings, or markdown chatter outside the file blocks.
+1. First, explain what you plan to do and why inside an explanation block, using the EXACT SAME LANGUAGE as the user's request (e.g., if the user writes in Russian, explain in Russian):
+
+=== EXPLANATION ===
+<your concise explanation in the user's language>
+=== END EXPLANATION ===
+
+2. Next, write idiomatic, safe, and clean Rust code that passes `cargo clippy` and `cargo test`.
 3. For every file you create or modify, output its COMPLETE valid Rust source code using the exact format below:
 
 === FILE: relative/path/to/file.rs ===
 <full rust code here>
 === END FILE ===
 
-4. If you receive compiler or clippy errors, analyze the exact error spans and fix the code in the affected files."#;
+4. If you receive compiler or clippy errors, briefly explain the fix in the EXPLANATION block and output the corrected COMPLETE files."#;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FilePatch {
     pub relative_path: PathBuf,
     pub content: String,
@@ -43,9 +49,33 @@ pub fn build_initial_prompt(
 
 pub fn build_repair_prompt(previous_prompt: &str, llm_output: &str, compiler_errors: &str) -> String {
     format!(
-        "{}\n\n=== YOUR PREVIOUS OUTPUT ===\n{}\n\n=== COMPILER / CLIPPY / TEST ERRORS ===\n{}\n\nFix the errors above and output the corrected files using the === FILE: <path> === format.",
+        "{}\n\n=== YOUR PREVIOUS OUTPUT ===\n{}\n\n=== COMPILER / CLIPPY / TEST ERRORS ===\n{}\n\nFix the errors above. Keep the === EXPLANATION === block (in the user's language) and output all corrected files using the === FILE: <path> === format.",
         previous_prompt, llm_output, compiler_errors
     )
+}
+
+pub fn parse_explanation(llm_response: &str) -> String {
+    let start_marker = concat!("=== ", "EXPLANATION ===");
+    let end_marker = concat!("=== ", "END EXPLANATION ===");
+
+    if let Some(start_idx) = llm_response.find(start_marker) {
+        let content_start = start_idx + start_marker.len();
+        let rest = &llm_response[content_start..];
+        if let Some(end_idx) = rest.find(end_marker) {
+            return rest[..end_idx].trim().to_string();
+        }
+    }
+
+    // Fallback: если модель написала текст до первого === FILE:, берем его как объяснение
+    let file_marker = concat!("=== ", "FILE:");
+    if let Some(file_idx) = llm_response.find(file_marker) {
+        let before = llm_response[..file_idx].trim();
+        if !before.is_empty() {
+            return before.to_string();
+        }
+    }
+
+    "Changes have been prepared and verified.".to_string()
 }
 
 pub fn parse_file_patches(llm_response: &str) -> Vec<FilePatch> {

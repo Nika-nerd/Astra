@@ -24,18 +24,18 @@ export function activate(context: vscode.ExtensionContext): void {
         }
 
         let activeRel = '';
+           const explicitFiles: string[] = [];
         const editor = vscode.window.activeTextEditor;
         const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (editor && root) {
-            activeRel = path.relative(root, editor.document.uri.fsPath);
+            explicitFiles.push(path.relative(root, editor.document.uri.fsPath));
         }
 
-        await chatProvider.handleRunTask(prompt, activeRel);
+        await chatProvider.handleRunTask(prompt, explicitFiles);
     });
 
     context.subscriptions.push(runTaskCmd);
 }
-
 export function deactivate(): void {
     if (backendClient) {
         backendClient.dispose();

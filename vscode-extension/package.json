@@ -1,6 +1,6 @@
 {
   "name": "astra-agent",
-  "displayName": "Astra Rust Autonomous Agent",
+  "displayName": "Astra",
   "description": "Autonomous Rust coding agent powered by Gemma 4, AST RepoMap, cargo clippy and cargo test verification.",
   "version": "0.1.0",
   "engines": {
@@ -29,7 +29,7 @@
         {
           "type": "webview",
           "id": "astra.chatView",
-          "name": "Astra Autonomous Agent"
+          "name": "Agent Astra"
          }
       ]
     },
