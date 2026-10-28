@@ -18,13 +18,13 @@ pub fn scan_workspace(root: &Path) -> Result<ProjectFiles> {
         .git_ignore(true)
         .build();
 
-    for result in walker {
+      for result in walker {
         let entry = match result {
             Ok(e) => e,
             Err(_) => continue,
         };
 
-        if !entry.file_type().map_or(false, |ft| ft.is_file()) {
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }
 
