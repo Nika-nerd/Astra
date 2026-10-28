@@ -205,7 +205,7 @@ export function getChatHtml(): string {
         <div id="mentionPopup"></div>
         <textarea id="promptInput" placeholder="Describe your task... (type @ to mention a file, Enter to send)"></textarea>
         <div class="hint">
-            <span>@ — выбрать файл</span>
+            <span>@ to mention file</span>
             <span>Enter to send, Shift+Enter for newline<</span>
         </div>
         <button id="sendBtn">Send Request</button>

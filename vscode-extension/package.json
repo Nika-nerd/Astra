@@ -29,7 +29,7 @@
         {
           "type": "webview",
           "id": "astra.chatView",
-          "name": "Agent Astra"
+          "name": "Rust coder"
          }
       ]
     },
