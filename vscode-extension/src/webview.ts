@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { AstraBackendClient, FilePatch } from './client';
+import { AstraBackendClient } from './client';
 import { getChatHtml } from './chatHtml';
 
 export class AstraChatViewProvider implements vscode.WebviewViewProvider {
@@ -30,15 +30,19 @@ export class AstraChatViewProvider implements vscode.WebviewViewProvider {
             type: string;
             prompt?: string;
             targetFiles?: string[];
-            patches?: FilePatch[];
-            messageId?: string;
+            previousPlan?: string;
+            approvedPlan?: string;
+            originalPrompt?: string;
+            file?: string;
         }) => {
             if (data.type === 'runTask' && data.prompt) {
-                await this.handleRunTask(data.prompt, data.targetFiles || []);
+                await this.handleRunTask(data.prompt, data.targetFiles || [], data.previousPlan);
+            } else if (data.type === 'executePlan' && data.approvedPlan) {
+                await this.handleExecutePlan(data.originalPrompt || '', data.approvedPlan, data.targetFiles || []);
             } else if (data.type === 'requestFileList') {
                 await this.sendWorkspaceFiles();
-            } else if (data.type === 'applyPatches' && data.patches) {
-                await this.applyPatchesToWorkspace(data.patches, data.messageId);
+            } else if (data.type === 'openFile' && data.file) {
+                await this.openWorkspaceFile(data.file);
             }
         });
     }
@@ -75,42 +79,28 @@ export class AstraChatViewProvider implements vscode.WebviewViewProvider {
         this.postMessage({ type: 'fileList', files, workspaceName: path.basename(root) });
     }
 
-    private async applyPatchesToWorkspace(patches: FilePatch[], messageId?: string): Promise<void> {
+    private async openWorkspaceFile(relPath: string): Promise<void> {
         const root = this.getActiveWorkspaceRoot();
         if (!root) {
-            vscode.window.showErrorMessage('Astra: No workspace folder open to apply changes.');
             return;
         }
-
-        try {
-            for (const patch of patches) {
-                const fullPath = path.join(root, patch.relative_path);
-                const dir = path.dirname(fullPath);
-                if (!fs.existsSync(dir)) {
-                    fs.mkdirSync(dir, { recursive: true });
-                }
-                fs.writeFileSync(fullPath, patch.content, 'utf8');
-
-                const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(fullPath));
-                await vscode.window.showTextDocument(doc, { preview: false });
-            }
-
-            vscode.window.showInformationMessage(
-                `Astra: Applied ${patches.length} verified file(s) to project.`
-            );
-            this.postMessage({ type: 'applied', messageId });
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            vscode.window.showErrorMessage(`Astra failed to apply changes: ${msg}`);
+        const fullPath = path.join(root, relPath);
+        if (fs.existsSync(fullPath)) {
+            const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(fullPath));
+            await vscode.window.showTextDocument(doc, { preview: false });
         }
     }
 
-    public async handleRunTask(rawPrompt: string, explicitFiles: string[] = []): Promise<void> {
+    public async handleRunTask(
+        rawPrompt: string,
+        explicitFiles: string[] = [],
+        previousPlan?: string
+    ): Promise<void> {
         const root = this.getActiveWorkspaceRoot();
         if (!root) {
             this.postMessage({
                 type: 'error',
-                message: 'Please open a Rust project folder (File -> Open Folder) so Astra can read its AST.'
+                message: 'Please open a folder (File -> Open Folder) so Astra can read its AST and build your project.'
             });
             return;
         }
@@ -138,16 +128,55 @@ export class AstraChatViewProvider implements vscode.WebviewViewProvider {
             type: 'userMessage',
             text: rawPrompt,
             targetFiles: target_files,
-            workspaceName: path.basename(root)
+            workspaceName: path.basename(root),
+            isRefinement: Boolean(previousPlan)
         });
 
         try {
             const result = await this.client.executeTask({
+                mode: 'plan',
                 prompt: rawPrompt,
                 target_files,
-                workspace_root: root
+                workspace_root: root,
+                previous_plan: previousPlan
             });
-            this.postMessage({ type: 'agentResult', result });
+            this.postMessage({
+                type: 'planResult',
+                result,
+                originalPrompt: rawPrompt,
+                targetFiles: target_files
+            });
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.postMessage({ type: 'error', message: msg });
+        }
+    }
+
+    public async handleExecutePlan(
+        originalPrompt: string,
+        approvedPlan: string,
+        targetFiles: string[]
+    ): Promise<void> {
+        const root = this.getActiveWorkspaceRoot();
+        if (!root) {
+            return;
+        }
+
+        try {
+            const result = await this.client.executeTask({
+                mode: 'execute',
+                prompt: originalPrompt,
+                target_files: targetFiles,
+                workspace_root: root,
+                approved_plan: approvedPlan
+            });
+
+            this.postMessage({ type: 'buildResult', result });
+
+            if (result.success && result.modified_files.length > 0) {
+                await this.openWorkspaceFile(result.modified_files[0]);
+                await this.sendWorkspaceFiles();
+            }
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             this.postMessage({ type: 'error', message: msg });

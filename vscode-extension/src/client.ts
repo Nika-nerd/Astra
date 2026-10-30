@@ -10,20 +10,29 @@ export interface FilePatch {
     content: string;
 }
 
+export type TaskMode = 'plan' | 'execute';
+
 export interface AgentTask {
+    mode?: TaskMode;
     prompt: string;
     target_files: string[];
     workspace_root?: string;
+    previous_plan?: string;
+    approved_plan?: string;
 }
 
 export interface AgentResult {
+    mode: TaskMode;
     success: boolean;
     attempts_used: number;
+    plan: string | null;
     explanation: string;
+    executed_commands: string[];
     proposed_patches: FilePatch[];
     modified_files: string[];
     last_error: string | null;
 }
+
 
 
 interface RpcResponse {

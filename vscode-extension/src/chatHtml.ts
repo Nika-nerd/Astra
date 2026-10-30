@@ -178,7 +178,7 @@ export function getChatHtml(): string {
         resize: none;
         min-height: 68px;
     }
-    .hint {
+     .hint {
         font-size: 10.5px;
         opacity: 0.65;
         display: flex;
@@ -188,14 +188,16 @@ export function getChatHtml(): string {
 </head>
 <body>
     <header>
-        <span><strong>Astra</strong> · Gemma 4 + AST</span>
+        <span><strong>Agent Astra</strong> · Gemma 4 + AST</span>
         <span id="wsBadge">Workspace</span>
     </header>
 
     <div id="chat">
         <div class="msg agent">
-           Hi! I'm <strong>Agent Astra</strong>. I have full visibility into your Rust project's AST.<br/>
-            Use <code>@filename</code> to reference files and describe your task — I will explain the plan in your prompt's language, generate the Rust code, verify it with <code>cargo clippy</code> and <code>cargo test</code>, and let you <strong>Apply</strong> the changes.
+            Hi! I'm <strong>Agent Astra</strong>. I have full visibility into your Rust project's AST.<br/>
+            1. Describe your project or task (use <code>@filename</code> to reference files).<br/>
+            2. Review or refine the generated <strong>Plan</strong>.<br/>
+            3. Click <strong>Apply Plan &amp; Build</strong> — I will autonomously run Cargo commands, create files, and verify everything with <code>cargo clippy</code> and <code>cargo test</code>.
         </div>
     </div>
 
@@ -203,12 +205,12 @@ export function getChatHtml(): string {
 
     <div class="composer">
         <div id="mentionPopup"></div>
-        <textarea id="promptInput" placeholder="Describe your task... (type @ to mention a file, Enter to send)"></textarea>
+        <textarea id="promptInput" placeholder="Describe project or task... (or type feedback to refine active plan)"></textarea>
         <div class="hint">
-            <span>@ to mention file</span>
-            <span>Enter to send, Shift+Enter for newline<</span>
+            <span id="modeHint">Mode: New Plan (@ to mention file)</span>
+            <span>Enter to send</span>
         </div>
-        <button id="sendBtn">Send Request</button>
+        <button id="sendBtn">Generate Plan</button>
     </div>
 
     <script>
@@ -219,18 +221,16 @@ export function getChatHtml(): string {
         const mentionPopup = document.getElementById('mentionPopup');
         const liveLogs = document.getElementById('liveLogs');
         const wsBadge = document.getElementById('wsBadge');
+        const modeHint = document.getElementById('modeHint');
 
         let workspaceFiles = [];
-        let pendingPatchesMap = {};
+        let activePlanState = null;
         let msgCounter = 0;
 
         vscode.postMessage({ type: 'requestFileList' });
 
         function escapeHtml(str) {
-            return String(str)
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
+            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         }
 
         function sendPrompt() {
@@ -239,14 +239,19 @@ export function getChatHtml(): string {
             promptInput.value = '';
             mentionPopup.style.display = 'none';
             sendBtn.disabled = true;
-            sendBtn.textContent = 'Astra verifying (clippy & test)...';
+            sendBtn.textContent = activePlanState ? 'Refining Plan...' : 'Generating Plan...';
             liveLogs.style.display = 'block';
             liveLogs.textContent = '';
-            vscode.postMessage({ type: 'runTask', prompt: text });
+
+            vscode.postMessage({
+                type: 'runTask',
+                prompt: text,
+                previousPlan: activePlanState ? activePlanState.plan : undefined,
+                targetFiles: activePlanState ? activePlanState.targetFiles : []
+            });
         }
 
         sendBtn.addEventListener('click', sendPrompt);
-
         promptInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -289,82 +294,110 @@ export function getChatHtml(): string {
 
             if (msg.type === 'fileList') {
                 workspaceFiles = msg.files || [];
-                if (msg.workspaceName) {
-                    wsBadge.textContent = '📁 ' + msg.workspaceName;
-                }
+                if (msg.workspaceName) wsBadge.textContent = '📁 ' + msg.workspaceName;
             } else if (msg.type === 'userMessage') {
-                if (msg.workspaceName) {
-                    wsBadge.textContent = '📁 ' + msg.workspaceName;
-                }
+                if (msg.workspaceName) wsBadge.textContent = '📁 ' + msg.workspaceName;
                 const div = document.createElement('div');
                 div.className = 'msg user';
-                let chipsHtml = '';
+                let chips = msg.isRefinement ? '<span class="chip">↻ Refine Plan</span> ' : '';
                 if (msg.targetFiles && msg.targetFiles.length > 0) {
-                    chipsHtml = '<div class="chips">' + msg.targetFiles.map(f => '<span class="chip">@' + escapeHtml(f) + '</span>').join('') + '</div>';
+                    chips += msg.targetFiles.map(f => '<span class="chip">@' + escapeHtml(f) + '</span>').join(' ');
                 }
-                div.innerHTML = chipsHtml + '<div>' + escapeHtml(msg.text) + '</div>';
+                div.innerHTML = (chips ? '<div class="chips">' + chips + '</div>' : '') + '<div>' + escapeHtml(msg.text) + '</div>';
                 chatEl.appendChild(div);
                 chatEl.scrollTop = chatEl.scrollHeight;
             } else if (msg.type === 'log') {
                 liveLogs.style.display = 'block';
                 liveLogs.textContent += msg.text + '\\n';
                 liveLogs.scrollTop = liveLogs.scrollHeight;
-            } else if (msg.type === 'agentResult') {
+            } else if (msg.type === 'planResult') {
                 sendBtn.disabled = false;
-                sendBtn.textContent = 'Send Request';
                 liveLogs.style.display = 'none';
+                const planText = msg.result.plan || '';
+                const planId = 'plan-' + (++msgCounter);
+
+                activePlanState = {
+                    plan: planText,
+                    originalPrompt: msg.originalPrompt,
+                    targetFiles: msg.targetFiles || []
+                };
+
+                modeHint.textContent = 'Mode: Type feedback to refine plan, or click Apply below';
+                sendBtn.textContent = 'Refine Plan';
+
+                const div = document.createElement('div');
+                div.className = 'msg agent';
+                div.innerHTML =
+                    '<div class="status-bar status-ok">📋 Proposed Architectural Plan</div>' +
+                    '<div class="explanation">' + escapeHtml(planText) + '</div>' +
+                    '<div class="actions">' +
+                        '<button id="approve-' + planId + '">✓ Apply Plan &amp; Build Project</button>' +
+                        '<button id="reset-' + planId + '" style="background:transparent;border:1px solid var(--vscode-panel-border);">New Task</button>' +
+                    '</div>';
+                chatEl.appendChild(div);
+                chatEl.scrollTop = chatEl.scrollHeight;
+
+                const approveBtn = document.getElementById('approve-' + planId);
+                const resetBtn = document.getElementById('reset-' + planId);
+
+                approveBtn.addEventListener('click', () => {
+                    approveBtn.disabled = true;
+                    approveBtn.textContent = 'Building & Verifying (clippy + test)...';
+                    sendBtn.disabled = true;
+                    liveLogs.style.display = 'block';
+                    liveLogs.textContent = '';
+                    vscode.postMessage({
+                        type: 'executePlan',
+                        originalPrompt: activePlanState.originalPrompt,
+                        approvedPlan: activePlanState.plan,
+                        targetFiles: activePlanState.targetFiles
+                    });
+                });
+
+                resetBtn.addEventListener('click', () => {
+                    activePlanState = null;
+                    modeHint.textContent = 'Mode: New Plan (@ to mention file)';
+                    sendBtn.textContent = 'Generate Plan';
+                });
+            } else if (msg.type === 'buildResult') {
+                sendBtn.disabled = false;
+                sendBtn.textContent = 'Generate Plan';
+                modeHint.textContent = 'Mode: New Plan (@ to mention file)';
+                liveLogs.style.display = 'none';
+                activePlanState = null;
 
                 const res = msg.result;
-                const msgId = 'msg-' + (++msgCounter);
                 const div = document.createElement('div');
                 div.className = 'msg agent';
 
                 if (res.success) {
-                    pendingPatchesMap[msgId] = res.proposed_patches;
                     let html = '<div class="explanation">' + escapeHtml(res.explanation) + '</div>';
-                    html += '<div class="status-bar status-ok">✓ Verified: cargo clippy & cargo test (attempts: ' + res.attempts_used + ')</div>';
-
+                    html += '<div class="status-bar status-ok">✓ Built &amp; Verified by clippy + test (attempts: ' + res.attempts_used + ')</div>';
+                    if (res.executed_commands && res.executed_commands.length > 0) {
+                        html += '<div class="chips">' + res.executed_commands.map(c => '<span class="chip">$ ' + escapeHtml(c) + '</span>').join('') + '</div>';
+                    }
                     for (const p of res.proposed_patches) {
                         html += '<div class="patch-card">' +
-                            '<div class="patch-header">📄 ' + escapeHtml(p.relative_path) + '</div>' +
-                            '<pre class="patch-code">' + escapeHtml(p.content) + '</pre>' +
-                            '</div>';
+                            '<div class="patch-header" data-open="' + escapeHtml(p.relative_path) + '">📄 ' + escapeHtml(p.relative_path) + ' (Saved ✓)</div>' +
+                            '<pre class="patch-code">' + escapeHtml(p.content) + '</pre></div>';
                     }
-
-                    html += '<div class="actions"><button id="apply-' + msgId + '">✓ Apply Changes</button></div>';
                     div.innerHTML = html;
                     chatEl.appendChild(div);
-
-                    const applyBtn = document.getElementById('apply-' + msgId);
-                    applyBtn.addEventListener('click', () => {
-                        vscode.postMessage({
-                            type: 'applyPatches',
-                            patches: pendingPatchesMap[msgId],
-                            messageId: msgId
+                    div.querySelectorAll('[data-open]').forEach(el => {
+                        el.addEventListener('click', () => {
+                            vscode.postMessage({ type: 'openFile', file: el.getAttribute('data-open') });
                         });
                     });
                 } else {
-                    let html = '';
-                    if (res.explanation) {
-                        html += '<div class="explanation">' + escapeHtml(res.explanation) + '</div>';
-                    }
-                    html += '<div class="status-bar status-err">✗ Failed clippy/test verification after ' + res.attempts_used + ' attempts</div>';
-                    if (res.last_error) {
-                        html += '<pre class="patch-code">' + escapeHtml(res.last_error) + '</pre>';
-                    }
+                    let html = '<div class="status-bar status-err">✗ Build failed verification after ' + res.attempts_used + ' attempts (rolled back)</div>';
+                    if (res.last_error) html += '<pre class="patch-code">' + escapeHtml(res.last_error) + '</pre>';
                     div.innerHTML = html;
                     chatEl.appendChild(div);
                 }
                 chatEl.scrollTop = chatEl.scrollHeight;
-            } else if (msg.type === 'applied') {
-                const btn = document.getElementById('apply-' + msg.messageId);
-                if (btn) {
-                    btn.disabled = true;
-                    btn.textContent = '✓ Changes Applied';
-                }
             } else if (msg.type === 'error') {
                 sendBtn.disabled = false;
-                sendBtn.textContent = 'Send Request';
+                sendBtn.textContent = activePlanState ? 'Refine Plan' : 'Generate Plan';
                 liveLogs.style.display = 'none';
                 const div = document.createElement('div');
                 div.className = 'msg agent';

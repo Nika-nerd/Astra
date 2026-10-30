@@ -22,7 +22,7 @@ impl AppConfig {
             max_repair_attempts: env::var("ASTRA_MAX_ATTEMPTS")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(3),
+                .unwrap_or(10),
         }
     }
 
