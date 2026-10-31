@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
+use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
+use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone)]
@@ -85,18 +88,42 @@ pub async fn run_workspace_commands(workspace_root: &Path, commands: &[String]) 
 
 
 pub async fn run_verification(workspace_root: &Path) -> Result<VerificationResult> {
+    let main_rs = workspace_root.join("src").join("main.rs");
+    if main_rs.exists() {
+        if let Ok(content) = std::fs::read_to_string(&main_rs) {
+            if content.contains("println!(\"Hello, world!\");") && content.lines().count() <= 5 {
+                warn!("src/main.rs still has default Hello World stub! Failing verification so LLM writes real code.");
+                return Ok(VerificationResult {
+                    success: false,
+                    error_log: "INCOMPLETE IMPLEMENTATION ERROR: `src/main.rs` still contains the default `println!(\"Hello, world!\");` stub from `cargo init`! You only updated Cargo.toml or forgot to output `=== FILE: src/main.rs ===`. You MUST output the complete implementation for `src/main.rs` and all planned modules now.".to_string(),
+                });
+            }
+        }
+    }
     info!("Running cargo clippy in {:?}...", workspace_root);
     let clippy_res = run_clippy(workspace_root).await?;
     if !clippy_res.success {
         return Ok(clippy_res);
     }
 
-    info!("Running cargo test in {:?}...", workspace_root);
-    run_tests(workspace_root).await
+    info!("Running cargo test (with 15s hang protection) in {:?}...", workspace_root);
+    let test_res = run_tests(workspace_root).await?;
+    if !test_res.success {
+        return Ok(test_res);
+    }
+
+    // Форматируем финальный проверенный код за миллисекунды
+    let _ = Command::new("cargo")
+        .args(["fmt"])
+        .current_dir(workspace_root)
+        .output()
+        .await;
+
+    Ok(test_res)
 }
 
 async fn run_clippy(workspace_root: &Path) -> Result<VerificationResult> {
-    // 1. Автоматически применяем безопасные фиксы компилятора (unused imports, mut и т.д.)
+    // 1. Автоматически применяем безопасные фиксы компилятора
     let _ = Command::new("cargo")
         .args([
             "clippy",
@@ -110,9 +137,25 @@ async fn run_clippy(workspace_root: &Path) -> Result<VerificationResult> {
         .output()
         .await;
 
-    // 2. Запускаем проверку без -D warnings, чтобы не валить сборку из-за мелких советов стиля
+    // 2. Превращаем критические желтые предупреждения (бесконечные циклы, дедлоки, todo!) в ошибки (-D),
+    // но игнорируем косметические предупреждения (-A), чтобы не терять скорость
     let output = Command::new("cargo")
-        .args(["clippy", "--all-targets", "--message-format=json"])
+        .args([
+            "clippy",
+            "--all-targets",
+            "--message-format=json",
+            "--",
+            "-D", "clippy::infinite_iter",
+            "-D", "while_true",
+            "-D", "clippy::never_loop",
+            "-D", "clippy::await_holding_lock",
+            "-D", "clippy::todo",
+            "-D", "clippy::unimplemented",
+            "-D", "unreachable_code",
+            "-A", "dead_code",
+            "-A", "unused_imports",
+            "-A", "unused_variables",
+        ])
         .current_dir(workspace_root)
         .output()
         .await
@@ -159,25 +202,53 @@ async fn run_clippy(workspace_root: &Path) -> Result<VerificationResult> {
     // Если ошибка произошла на уровне самого Cargo (например, битый Cargo.toml), берем stderr
    
 async fn run_tests(workspace_root: &Path) -> Result<VerificationResult> {
-    let output = Command::new("cargo")
-        .args(["test", "--color=never"])
+    // Сначала быстро собираем тестовый бинарник без запуска, чтобы время компиляции не съедало таймаут рантайма
+    let build_out = Command::new("cargo")
+        .args(["test", "--no-run", "--quiet"])
         .current_dir(workspace_root)
         .output()
         .await
-        .context("Failed to execute cargo test")?;
+        .context("Failed to build tests")?;
 
-    if output.status.success() {
+    if !build_out.status.success() {
         return Ok(VerificationResult {
-            success: true,
-            error_log: String::new(),
+            success: false,
+            error_log: String::from_utf8_lossy(&build_out.stderr).to_string(),
         });
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Запускаем сами тесты с жестким таймаутом 15 секунд для перехвата бесконечных циклов
+    let child = Command::new("cargo")
+        .args(["test", "--color=never", "--", "--test-threads=4"])
+        .current_dir(workspace_root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .context("Failed to spawn cargo test")?;
 
-    Ok(VerificationResult {
-        success: false,
-        error_log: format!("STDOUT:\n{}\nSTDERR:\n{}", stdout, stderr),
-    })
-}
+    match timeout(Duration::from_secs(15), child.wait_with_output()).await {
+        Ok(Ok(output)) => {
+            if output.status.success() {
+                Ok(VerificationResult {
+                    success: true,
+                    error_log: String::new(),
+                })
+            } else {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                Ok(VerificationResult {
+                    success: false,
+                    error_log: format!("TEST FAILURE:\n{}\n{}", stdout, stderr),
+                })
+            }
+        }
+        Ok(Err(e)) => Err(e).context("Failed waiting for cargo test"),
+        Err(_) => {
+            warn!("cargo test timed out after 15 seconds! Infinite loop detected.");
+            Ok(VerificationResult {
+                success: false,
+                error_log: "CRITICAL RUNTIME ERROR: `cargo test` timed out after 15 seconds! Your code or test contains an infinite loop (`loop {}` or `while` condition that never terminates) or a blocking network listener inside a unit test. Fix the loop termination condition immediately.".to_string(),
+            })
+        }
+    }}

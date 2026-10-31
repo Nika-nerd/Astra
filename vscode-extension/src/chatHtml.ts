@@ -189,7 +189,10 @@ export function getChatHtml(): string {
 <body>
     <header>
         <span><strong>Agent Astra</strong> · Gemma 4 + AST</span>
-        <span id="wsBadge">Workspace</span>
+        <span>
+            <span id="wsBadge">Workspace</span>
+            <button id="clearBtn" style="padding:2px 6px;font-size:10px;margin-left:6px;background:transparent;border:1px solid var(--vscode-panel-border);">Clear</button>
+        </span>
     </header>
 
     <div id="chat">
@@ -218,17 +221,43 @@ export function getChatHtml(): string {
         const chatEl = document.getElementById('chat');
         const promptInput = document.getElementById('promptInput');
         const sendBtn = document.getElementById('sendBtn');
+        const clearBtn = document.getElementById('clearBtn');
         const mentionPopup = document.getElementById('mentionPopup');
         const liveLogs = document.getElementById('liveLogs');
         const wsBadge = document.getElementById('wsBadge');
         const modeHint = document.getElementById('modeHint');
 
+        const defaultChatHtml = chatEl.innerHTML;
         let workspaceFiles = [];
         let activePlanState = null;
         let msgCounter = 0;
 
-        vscode.postMessage({ type: 'requestFileList' });
+        // Восстанавливаем историю чата, если окно перезагружалось
+        const savedState = vscode.getState();
+        if (savedState && savedState.chatHtml) {
+            chatEl.innerHTML = savedState.chatHtml;
+            activePlanState = savedState.activePlanState || null;
+            msgCounter = savedState.msgCounter || 0;
+            chatEl.scrollTop = chatEl.scrollHeight;
+        }
 
+        function saveChatState() {
+            vscode.setState({
+                chatHtml: chatEl.innerHTML,
+                activePlanState,
+                msgCounter
+            });
+        }
+
+        clearBtn.addEventListener('click', () => {
+            chatEl.innerHTML = defaultChatHtml;
+            activePlanState = null;
+            modeHint.textContent = 'Mode: New Plan (@ to mention file)';
+            sendBtn.textContent = 'Generate Plan';
+            saveChatState();
+        });
+
+        vscode.postMessage({ type: 'requestFileList' });
         function escapeHtml(str) {
             return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         }
@@ -395,7 +424,7 @@ export function getChatHtml(): string {
                     chatEl.appendChild(div);
                 }
                 chatEl.scrollTop = chatEl.scrollHeight;
-            } else if (msg.type === 'error') {
+           } else if (msg.type === 'error') {
                 sendBtn.disabled = false;
                 sendBtn.textContent = activePlanState ? 'Refine Plan' : 'Generate Plan';
                 liveLogs.style.display = 'none';
@@ -405,6 +434,7 @@ export function getChatHtml(): string {
                 chatEl.appendChild(div);
                 chatEl.scrollTop = chatEl.scrollHeight;
             }
+            saveChatState();
         });
     </script>
 </body>

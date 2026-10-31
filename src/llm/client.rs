@@ -22,6 +22,8 @@ struct OllamaRequest<'a> {
 #[derive(Serialize)]
 struct OllamaOptions {
     temperature: f32,
+     num_ctx: usize,
+     num_predict: isize,
 }
 
 #[derive(Deserialize)]
@@ -43,14 +45,16 @@ impl LlmClient {
         })
     }
 
-    pub async fn generate(&self, system_prompt: &str, user_prompt: &str) -> Result<String> {
+       pub async fn generate(&self, system_prompt: &str, user_prompt: &str) -> Result<String> {
         let req_body = OllamaRequest {
             model: &self.model,
             prompt: user_prompt,
             system: system_prompt,
             stream: false,
             options: OllamaOptions {
-                temperature: 0.1, // Низкая температура для детерминированной генерации кода
+                temperature: 0.1,
+                num_ctx: 16384,
+                num_predict: 8192,
             },
         };
 

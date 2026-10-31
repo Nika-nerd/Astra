@@ -10,7 +10,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const chatProvider = new AstraChatViewProvider(context.extensionUri, backendClient);
     context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider(AstraChatViewProvider.viewType, chatProvider)
+        vscode.window.registerWebviewViewProvider(
+            AstraChatViewProvider.viewType,
+            chatProvider,
+            {
+                webviewOptions: {
+                    retainContextWhenHidden: true
+                }
+            }
+        )
     );
 
     const runTaskCmd = vscode.commands.registerCommand('astra.runTask', async () => {

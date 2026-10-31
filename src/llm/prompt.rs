@@ -12,7 +12,6 @@ Your task in this phase is ONLY to create or refine a clear, step-by-step implem
    - Files to create or modify (with brief description of structs/functions)
    - Verification strategy (`cargo clippy` & `cargo test`)
 3. Do NOT output full source code files yet. Wait for the user's approval."#;
-
 pub const SYSTEM_PROMPT: &str = r#"You are Astra, an autonomous senior Rust software engineer.
 You are now executing an APPROVED architectural plan to build or update a Rust project.
 
@@ -33,7 +32,13 @@ RULES:
 <full code here>
 === END FILE ===
 
-4. When fixing compiler/clippy/test errors on repair attempts, you ONLY need to output the === FILE: <path> === blocks for the specific files that need changes (each modified file must still have its complete code)."#;
+4. When fixing compiler/clippy/test errors on repair attempts, you ONLY need to output the === FILE: <path> === blocks for the specific files that need changes (each modified file must still have its complete code).
+5. CRITICAL QUALITY RULES:
+   - Never write infinite loops (`loop` or `while`) without a guaranteed break/return condition.
+   - Never hold a `std::sync::Mutex` lock across an `.await` point.
+   - Do NOT leave `todo!()` or `unimplemented!()` macros.
+   - Include `#[cfg(test)]` unit tests that test the core business logic functions directly (never start an infinite `TcpListener` / HTTP server loop inside a unit test)."#;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FilePatch {
     pub relative_path: PathBuf,
@@ -156,7 +161,6 @@ pub fn parse_commands(llm_response: &str) -> Vec<String> {
     Vec::new()
 }
 
-
 pub fn parse_file_patches(llm_response: &str) -> Vec<FilePatch> {
     let mut patches = Vec::new();
     let start_marker = concat!("=== ", "FILE:");
@@ -174,11 +178,15 @@ pub fn parse_file_patches(llm_response: &str) -> Vec<FilePatch> {
         let content_start = abs_start + line_end + 1;
         let search_area = &llm_response[content_start..];
 
-        // Если внутри файла встречается еще один === FILE:, ищем закрывающий маркер до него, иначе берем последний
         let next_file_idx = search_area.find(start_marker).unwrap_or(search_area.len());
-        let Some(end_idx) = search_area[..next_file_idx].rfind(end_marker) else { break };
+        let chunk = &search_area[..next_file_idx];
 
-        let mut raw_content = search_area[..end_idx].trim();
+        let (end_idx, step_len) = match chunk.rfind(end_marker) {
+            Some(idx) => (idx, idx + end_marker.len()),
+            None => (chunk.len(), chunk.len()),
+        };
+
+        let mut raw_content = chunk[..end_idx].trim();
 
         if raw_content.starts_with("```") {
             if let Some(first_nl) = raw_content.find('\n') {
@@ -189,19 +197,18 @@ pub fn parse_file_patches(llm_response: &str) -> Vec<FilePatch> {
             }
         }
 
-        if !path_str.is_empty() {
+        if !path_str.is_empty() && !raw_content.is_empty() {
             patches.push(FilePatch {
                 relative_path: PathBuf::from(path_str),
                 content: format!("{}\n", raw_content),
             });
         }
 
-        current_pos = content_start + end_idx + end_marker.len();
+        current_pos = content_start + step_len;
     }
 
     patches
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
